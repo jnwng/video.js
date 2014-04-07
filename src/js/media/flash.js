@@ -319,7 +319,7 @@ vjs.Flash.prototype.enterFullScreen = function(){
 
 // Create setters and getters for attributes
 var api = vjs.Flash.prototype,
-    readWrite = 'rtmpConnection,rtmpStream,preload,defaultPlaybackRate,playbackRate,autoplay,loop,mediaGroup,controller,controls,volume,muted,defaultMuted'.split(','),
+    readWrite = 'rtmpConnection,rtmpStream,preload,autoplay,loop,mediaGroup,controller,controls,volume,muted,defaultMuted'.split(','),
     readOnly = 'error,networkState,readyState,seeking,initialTime,duration,startOffsetTime,paused,played,seekable,ended,videoTracks,audioTracks,videoWidth,videoHeight,textTracks'.split(',');
     // Overridden: buffered, currentTime, currentSrc
 

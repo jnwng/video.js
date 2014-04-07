@@ -88,6 +88,9 @@ vjs.options = {
   // defaultVolume: 0.85,
   'defaultVolume': 0.00, // The freakin seaguls are driving me crazy!
 
+  // default playback rates
+  'playbackRates': [0.5, 1, 1.5, 2],
+
   // Included control sets
   'children': {
     'mediaLoader': {},
@@ -4170,6 +4173,19 @@ vjs.Player.prototype.listenForUserActivity = function(){
     clearInterval(activityCheck);
     clearTimeout(inactivityTimeout);
   });
+
+  vjs.Player.prototype.playbackRate = function(rate) {
+    if (rate !== undefined) {
+
+      this.techCall('setPlaybackRate', rate);
+
+      this.trigger('ratechange');
+
+      return this;
+    }
+
+    return this.techGet('playbackRate') || 1.0;
+  };
 };
 
 // Methods to add support for
@@ -4184,7 +4200,6 @@ vjs.Player.prototype.listenForUserActivity = function(){
 // videoWidth: function(){ return this.techCall('videoWidth'); },
 // videoHeight: function(){ return this.techCall('videoHeight'); },
 // defaultPlaybackRate: function(){ return this.techCall('defaultPlaybackRate'); },
-// playbackRate: function(){ return this.techCall('playbackRate'); },
 // mediaGroup: function(){ return this.techCall('mediaGroup'); },
 // controller: function(){ return this.techCall('controller'); },
 // defaultMuted: function(){ return this.techCall('defaultMuted'); }
@@ -4259,7 +4274,8 @@ vjs.ControlBar.prototype.options_ = {
     'progressControl': {},
     'fullscreenToggle': {},
     'volumeControl': {},
-    'muteToggle': {}
+    'muteToggle': {},
+    'playbackRateMenuButton': {}
     // 'volumeMenuButton': {}
   }
 };
@@ -4939,6 +4955,112 @@ vjs.VolumeMenuButton.prototype.createEl = function(){
   });
 };
 vjs.VolumeMenuButton.prototype.update = vjs.MuteToggle.prototype.update;
+/**
+ * The component for controlling the playback rate
+ *
+ * @param {vjs.Player|Object} player
+ * @param {Object=} options
+ * @constructor
+ */
+vjs.PlaybackRateMenuButton = vjs.MenuButton.extend({
+  /** @constructor */
+  init: function(player, options){
+    vjs.MenuButton.call(this, player, options);
+
+    player.on('loadstart', vjs.bind(this, function(){
+      // hide playback rate controls when they're no playback rate options to select
+      if (( player.tech.features && player.tech.features['playbackRate'] === false) ||
+          this.player_.options_.playbackRates.length === 0) {
+            this.addClass('vjs-hidden');
+      } else {
+        this.removeClass('vjs-hidden');
+      }
+    }));
+
+    player.on('ratechange', vjs.bind(this, this.rateChange));
+  }
+});
+
+
+vjs.PlaybackRateMenuButton.prototype.createEl = function(){
+  if(!this.player_.tech.features['playbackRate']) {
+    // empty element
+    return vjs.Component.prototype.createEl.call(this, 'div');
+  }
+  var rate = this.player_.tech.playbackRate() + 'x';
+  return vjs.Component.prototype.createEl.call(this, 'div', {
+    className: 'vjs-playback-rate vjs-menu-button vjs-control',
+    innerHTML:'<div class="vjs-playaback-rate-value">' + rate + '</div>'
+  });
+};
+
+// Menu creation
+vjs.PlaybackRateMenuButton.prototype.createMenu = function(){
+  var menu = new vjs.Menu(this.player_);
+  var rates = this.player_.options_.playbackRates;
+  for (var i = rates.length - 1; i >= 0; i--) {
+    menu.addChild(
+      new vjs.PlaybackRateMenuItem(this.player_, {rate: rates[i] + 'x'})
+      );
+  };
+
+  return menu;
+};
+
+vjs.PlaybackRateMenuButton.prototype.updateARIAAttributes = function(){
+  // Current playback rate
+  this.el_.setAttribute('aria-valuenow',this.player_.playbackRate());
+};
+
+vjs.PlaybackRateMenuButton.prototype.onClick = function(){
+  // select next rate option
+  var current_rate = this.player_.playbackRate();
+  var rates = this.player_.options_.playbackRates;
+  // wthis will select first if last currently selected
+  var new_rate = rates[0];
+  for (var i = 0; i <rates.length ; i++) {
+    if (rates[i] > current_rate) {
+      new_rate = rates[i];
+      break;
+    }
+  };
+  this.player_.playbackRate( new_rate );
+};
+
+// Update button label when rate changed
+vjs.PlaybackRateMenuButton.prototype.rateChange = function(){
+  this.el_.children[0].innerHTML = this.player_.playbackRate() + 'x';
+};
+
+/**
+ * The specific menu item type for selecting a playback rate
+ *
+ * @constructor
+ */
+vjs.PlaybackRateMenuItem = vjs.MenuItem.extend({
+  contentElType: 'button',
+  /** @constructor */
+  init: function(player, options){
+    var label = this.label = options['rate'];
+    var rate = this.rate = parseFloat(label, 10);
+
+    // Modify options for parent MenuItem class's init.
+    options['label'] = label;
+    options['selected'] = rate === 1;
+    vjs.MenuItem.call(this, player, options);
+
+    this.player_.on('ratechange', vjs.bind(this, this.update));
+  }
+});
+
+vjs.PlaybackRateMenuItem.prototype.onClick = function(){
+  vjs.MenuItem.prototype.onClick.call(this);
+  this.player_.playbackRate(this.rate);
+};
+
+vjs.PlaybackRateMenuItem.prototype.update = function(){
+  this.selected(this.player_.playbackRate() == this.rate);
+};
 /* Poster Image
 ================================================================================ */
 /**
@@ -5496,6 +5618,9 @@ vjs.Html5.prototype.seeking = function(){ return this.el_.seeking; };
 vjs.Html5.prototype.ended = function(){ return this.el_.ended; };
 vjs.Html5.prototype.defaultMuted = function(){ return this.el_.defaultMuted; };
 
+vjs.Html5.prototype.playbackRate = function(){ return this.el_.playbackRate; };
+vjs.Html5.prototype.setPlaybackRate = function(val){ this.el_.playbackRate = val; };
+
 /* HTML5 Support Testing ---------------------------------------------------- */
 
 vjs.Html5.isSupported = function(){
@@ -5928,10 +6053,9 @@ vjs.Flash.prototype.enterFullScreen = function(){
   return false;
 };
 
-
 // Create setters and getters for attributes
 var api = vjs.Flash.prototype,
-    readWrite = 'rtmpConnection,rtmpStream,preload,defaultPlaybackRate,playbackRate,autoplay,loop,mediaGroup,controller,controls,volume,muted,defaultMuted'.split(','),
+    readWrite = 'rtmpConnection,rtmpStream,preload,autoplay,loop,mediaGroup,controller,controls,volume,muted,defaultMuted'.split(','),
     readOnly = 'error,networkState,readyState,seeking,initialTime,duration,startOffsetTime,paused,played,seekable,ended,videoTracks,audioTracks,videoWidth,videoHeight,textTracks'.split(',');
     // Overridden: buffered, currentTime, currentSrc
 
