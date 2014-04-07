@@ -26,6 +26,10 @@ vjs.PlaybackRateMenuButton = vjs.MenuButton.extend({
 
 
 vjs.PlaybackRateMenuButton.prototype.createEl = function(){
+  if(!this.player_.tech.features['playbackRate']) {
+    // empty element
+    return vjs.Component.prototype.createEl.call(this, 'div');
+  }
   var rate = this.player_.tech.playbackRate() + 'x';
   return vjs.Component.prototype.createEl.call(this, 'div', {
     className: 'vjs-playback-rate vjs-menu-button vjs-control',

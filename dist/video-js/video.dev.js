@@ -64,7 +64,7 @@ var videojs = vjs;
 window.videojs = window.vjs = vjs;
 
 // CDN Version. Used to target right flash swf.
-vjs.CDN_VERSION = '4.4';
+vjs.CDN_VERSION = '4.5';
 vjs.ACCESS_PROTOCOL = ('https:' == document.location.protocol ? 'https://' : 'http://');
 
 /**
@@ -109,7 +109,7 @@ vjs.options = {
 };
 
 // Set CDN Version of swf
-// The added (+) blocks the replace from changing this 4.4 string
+// The added (+) blocks the replace from changing this 4.5 string
 if (vjs.CDN_VERSION !== 'GENERATED'+'_CDN_VSN') {
   videojs.options['flash']['swf'] = vjs.ACCESS_PROTOCOL + 'vjs.zencdn.net/'+vjs.CDN_VERSION+'/video-js.swf';
 }
@@ -471,9 +471,11 @@ vjs.fixEvent = function(event) {
       }
       event.returnValue = false;
       event.isDefaultPrevented = returnTrue;
+      event.defaultPrevented = true;
     };
 
     event.isDefaultPrevented = returnFalse;
+    event.defaultPrevented = false;
 
     // Stop the event from bubbling
     event.stopPropagation = function () {
@@ -558,7 +560,7 @@ vjs.trigger = function(elem, event) {
     vjs.trigger(parent, event);
 
   // If at the top of the DOM, triggers the default action unless disabled.
-  } else if (!parent && !event.isDefaultPrevented()) {
+  } else if (!parent && !event.defaultPrevented) {
     var targetData = vjs.getData(event.target);
 
     // Checks if the target has a default action for this event.
@@ -575,7 +577,7 @@ vjs.trigger = function(elem, event) {
   }
 
   // Inform the triggerer if the default was prevented by returning false
-  return !event.isDefaultPrevented();
+  return !event.defaultPrevented;
   /* Original version of js ninja events wasn't complete.
    * We've since updated to the latest version, but keeping this around
    * for now just in case.
@@ -1307,9 +1309,10 @@ vjs.findPosition = function(el) {
     scrollTop = window.pageYOffset || body.scrollTop;
     top = box.top + scrollTop - clientTop;
 
+    // Android sometimes returns slightly off decimal values, so need to round
     return {
-      left: left,
-      top: top
+      left: vjs.round(left),
+      top: vjs.round(top)
     };
 };
 /**
@@ -2372,8 +2375,6 @@ vjs.Slider = vjs.Component.extend({
     this.bar = this.getChild(this.options_['barName']);
     this.handle = this.getChild(this.options_['handleName']);
 
-    player.on(this.playerEvent, vjs.bind(this, this.update));
-
     this.on('mousedown', this.onMouseDown);
     this.on('touchstart', this.onMouseDown);
     this.on('focus', this.onFocus);
@@ -2382,10 +2383,7 @@ vjs.Slider = vjs.Component.extend({
 
     this.player_.on('controlsvisible', vjs.bind(this, this.update));
 
-    // This is actually to fix the volume handle position. http://twitter.com/#!/gerritvanaaken/status/159046254519787520
-    // this.player_.one('timeupdate', vjs.bind(this, this.update));
-
-    player.ready(vjs.bind(this, this.update));
+    player.on(this.playerEvent, vjs.bind(this, this.update));
 
     this.boundEvents = {};
   }
@@ -2717,7 +2715,7 @@ vjs.MenuButton.prototype.createMenu = function(){
 
   // Add a title list item to the top
   if (this.options().title) {
-    menu.el().appendChild(vjs.createEl('li', {
+    menu.contentEl().appendChild(vjs.createEl('li', {
       className: 'vjs-menu-title',
       innerHTML: vjs.capitalize(this.kind_),
       tabindex: -1
@@ -2881,20 +2879,7 @@ vjs.Player = vjs.Component.extend({
     //   this.addClass('vjs-touch-enabled');
     // }
 
-    // Firstplay event implimentation. Not sold on the event yet.
-    // Could probably just check currentTime==0?
-    this.one('play', function(e){
-      var fpEvent = { type: 'firstplay', target: this.el_ };
-      // Using vjs.trigger so we can check if default was prevented
-      var keepGoing = vjs.trigger(this.el_, fpEvent);
-
-      if (!keepGoing) {
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-      }
-    });
-
+    this.on('loadstart', this.onLoadStart);
     this.on('ended', this.onEnded);
     this.on('play', this.onPlay);
     this.on('firstplay', this.onFirstPlay);
@@ -3211,7 +3196,27 @@ vjs.Player.prototype.stopTrackingCurrentTime = function(){ clearInterval(this.cu
  * Fired when the user agent begins looking for media data
  * @event loadstart
  */
-vjs.Player.prototype.onLoadStart;
+vjs.Player.prototype.onLoadStart = function() {
+  // remove any first play listeners that weren't triggered from a previous video.
+  this.off('play', initFirstPlay);
+  this.one('play', initFirstPlay);
+
+  vjs.removeClass(this.el_, 'vjs-has-started');
+};
+
+ // Need to create this outside the scope of onLoadStart so it
+ // can be added and removed (to avoid piling first play listeners).
+function initFirstPlay(e) {
+  var fpEvent = { type: 'firstplay', target: this.el_ };
+  // Using vjs.trigger so we can check if default was prevented
+  var keepGoing = vjs.trigger(this.el_, fpEvent);
+
+  if (!keepGoing) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+  }
+}
 
 /**
  * Fired when the player has initial duration and dimension information
@@ -3309,7 +3314,16 @@ vjs.Player.prototype.onDurationChange = function(){
   // accidentally cause the stack to blow up.
   var duration = this.techGet('duration');
   if (duration) {
+    if (duration < 0) {
+      duration = Infinity;
+    }
     this.duration(duration);
+    // Determine if the stream is live and propagate styles down to UI.
+    if (duration === Infinity) {
+      this.addClass('vjs-live');
+    } else {
+      this.removeClass('vjs-live');
+    }
   }
 };
 
@@ -3852,6 +3866,7 @@ vjs.Player.prototype.src = function(source){
       this.el_.appendChild(vjs.createEl('p', {
         innerHTML: this.options()['notSupportedMessage']
       }));
+      this.triggerReady(); // we could not find an appropriate tech, but let's still notify the delegate that this is it
     }
 
   // Case: Source object { src: '', type: '' ... }
@@ -4083,10 +4098,13 @@ vjs.Player.prototype.userActive = function(bool){
         //
         // When this gets resolved in ALL browsers it can be removed
         // https://code.google.com/p/chromium/issues/detail?id=103041
-        this.tech.one('mousemove', function(e){
-          e.stopPropagation();
-          e.preventDefault();
-        });
+        if(this.tech) {
+          this.tech.one('mousemove', function(e){
+            e.stopPropagation();
+            e.preventDefault();
+          });
+        }
+
         this.removeClass('vjs-user-active');
         this.addClass('vjs-user-inactive');
         this.trigger('userinactive');
@@ -4264,6 +4282,7 @@ vjs.ControlBar.prototype.options_ = {
     'timeDivider': {},
     'durationDisplay': {},
     'remainingTimeDisplay': {},
+    'liveDisplay': {},
     'progressControl': {},
     'fullscreenToggle': {},
     'volumeControl': {},
@@ -4277,6 +4296,34 @@ vjs.ControlBar.prototype.createEl = function(){
   return vjs.createEl('div', {
     className: 'vjs-control-bar'
   });
+};
+/**
+ * Displays the live indicator
+ * TODO - Future make it click to snap to live
+ * @param {vjs.Player|Object} player
+ * @param {Object=} options
+ * @constructor
+ */
+vjs.LiveDisplay = vjs.Component.extend({
+  init: function(player, options){
+    vjs.Component.call(this, player, options);
+  }
+});
+
+vjs.LiveDisplay.prototype.createEl = function(){
+  var el = vjs.Component.prototype.createEl.call(this, 'div', {
+    className: 'vjs-live-controls vjs-control'
+  });
+
+  this.contentEl_ = vjs.createEl('div', {
+    className: 'vjs-live-display',
+    innerHTML: '<span class="vjs-control-text">Stream Type </span>LIVE',
+    'aria-live': 'off'
+  });
+
+  el.appendChild(this.contentEl_);
+
+  return el;
 };
 /**
  * Button to toggle between play and pause
@@ -4740,7 +4787,6 @@ vjs.VolumeBar = vjs.Slider.extend({
     vjs.Slider.call(this, player, options);
     player.on('volumechange', vjs.bind(this, this.updateARIAAttributes));
     player.ready(vjs.bind(this, this.updateARIAAttributes));
-    setTimeout(vjs.bind(this, this.update), 0); // update when elements is in DOM
   }
 });
 
@@ -4976,6 +5022,10 @@ vjs.PlaybackRateMenuButton = vjs.MenuButton.extend({
 
 
 vjs.PlaybackRateMenuButton.prototype.createEl = function(){
+  if(!this.player_.tech.features['playbackRate']) {
+    // empty element
+    return vjs.Component.prototype.createEl.call(this, 'div');
+  }
   var rate = this.player_.tech.playbackRate() + 'x';
   return vjs.Component.prototype.createEl.call(this, 'div', {
     className: 'vjs-playback-rate vjs-menu-button vjs-control',
@@ -5145,8 +5195,6 @@ vjs.LoadingSpinner = vjs.Component.extend({
     player.on('canplay', vjs.bind(this, this.hide));
     player.on('canplaythrough', vjs.bind(this, this.hide));
     player.on('playing', vjs.bind(this, this.hide));
-    player.on('seeked', vjs.bind(this, this.hide));
-
     player.on('seeking', vjs.bind(this, this.show));
 
     // in some browsers seeking does not trigger the 'playing' event,
@@ -5155,6 +5203,7 @@ vjs.LoadingSpinner = vjs.Component.extend({
     player.on('seeked', vjs.bind(this, this.hide));
 
     player.on('error', vjs.bind(this, this.show));
+    player.on('ended', vjs.bind(this, this.hide));
 
     // Not showing spinner on stalled any more. Browsers may stall and then not trigger any events that would remove the spinner.
     // Checked in Chrome 16 and Safari 5.1.2. http://help.videojs.com/discussions/problems/883-why-is-the-download-progress-showing
@@ -5643,6 +5692,53 @@ vjs.Html5.canControlVolume = function(){
   return volume !== vjs.TEST_VID.volume;
 };
 
+// HTML5 Feature detection and Device Fixes --------------------------------- //
+(function() {
+  var canPlayType,
+      mpegurlRE = /^application\/(?:x-|vnd\.apple\.)mpegurl/i,
+      mp4RE = /^video\/mp4/i;
+
+  vjs.Html5.patchCanPlayType = function() {
+    // Android 4.0 and above can play HLS to some extent but it reports being unable to do so
+    if (vjs.ANDROID_VERSION >= 4.0) {
+      if (!canPlayType) {
+        canPlayType = vjs.TEST_VID.constructor.prototype.canPlayType;
+      }
+
+      vjs.TEST_VID.constructor.prototype.canPlayType = function(type) {
+        if (type && mpegurlRE.test(type)) {
+          return 'maybe';
+        }
+        return canPlayType.call(this, type);
+      };
+    }
+
+    // Override Android 2.2 and less canPlayType method which is broken
+    if (vjs.IS_OLD_ANDROID) {
+      if (!canPlayType) {
+        canPlayType = vjs.TEST_VID.constructor.prototype.canPlayType;
+      }
+
+      vjs.TEST_VID.constructor.prototype.canPlayType = function(type){
+        if (type && mp4RE.test(type)) {
+          return 'maybe';
+        }
+        return canPlayType.call(this, type);
+      };
+    }
+  };
+
+  vjs.Html5.unpatchCanPlayType = function() {
+    var r = vjs.TEST_VID.constructor.prototype.canPlayType;
+    vjs.TEST_VID.constructor.prototype.canPlayType = canPlayType;
+    canPlayType = null;
+    return r;
+  };
+
+  // by default, patch the video element
+  vjs.Html5.patchCanPlayType();
+})();
+
 // List of all HTML5 events (various uses).
 vjs.Html5.Events = 'loadstart,suspend,abort,error,emptied,stalled,loadedmetadata,loadeddata,canplay,canplaythrough,playing,waiting,seeking,seeked,ended,durationchange,timeupdate,progress,play,pause,ratechange,volumechange'.split(',');
 
@@ -5677,15 +5773,6 @@ vjs.Html5.disposeMediaElement = function(el){
     })();
   }
 };
-
-// HTML5 Feature detection and Device Fixes --------------------------------- //
-
-  // Override Android 2.2 and less canPlayType method which is broken
-if (vjs.IS_OLD_ANDROID) {
-  document.createElement('video').constructor.prototype.canPlayType = function(type){
-    return (type && type.toLowerCase().indexOf('video/mp4') != -1) ? 'maybe' : '';
-  };
-}
 /**
  * @fileoverview VideoJS-SWF - Custom Flash Player with HTML5-ish API
  * https://github.com/zencoder/video-js-swf
@@ -5972,8 +6059,8 @@ vjs.Flash.prototype.currentSrc = function(){
   var src = this.el_.vjs_getProperty('currentSrc');
   // no src, check and see if RTMP
   if (src == null) {
-    var connection = this.rtmpConnection(),
-        stream = this.rtmpStream();
+    var connection = this['rtmpConnection'](),
+        stream = this['rtmpStream']();
 
     if (connection && stream) {
       src = vjs.Flash.streamFromParts(connection, stream);
@@ -6005,18 +6092,9 @@ vjs.Flash.prototype.enterFullScreen = function(){
   return false;
 };
 
-vjs.Flash.prototype.playbackRate = function(){
-  return false;
-};
-
-vjs.Flash.prototype.setPlaybackRate = function(){
-  return false;
-};
-
-
 // Create setters and getters for attributes
 var api = vjs.Flash.prototype,
-    readWrite = 'rtmpConnection,rtmpStream,preload,defaultPlaybackRate,playbackRate,autoplay,loop,mediaGroup,controller,controls,volume,muted,defaultMuted'.split(','),
+    readWrite = 'rtmpConnection,rtmpStream,preload,autoplay,loop,mediaGroup,controller,controls,volume,muted,defaultMuted'.split(','),
     readOnly = 'error,networkState,readyState,seeking,initialTime,duration,startOffsetTime,paused,played,seekable,ended,videoTracks,audioTracks,videoWidth,videoHeight,textTracks'.split(',');
     // Overridden: buffered, currentTime, currentSrc
 
@@ -7250,7 +7328,7 @@ vjs.ChaptersButton.prototype.createMenu = function(){
 
   var menu = this.menu = new vjs.Menu(this.player_);
 
-  menu.el_.appendChild(vjs.createEl('li', {
+  menu.contentEl().appendChild(vjs.createEl('li', {
     className: 'vjs-menu-title',
     innerHTML: vjs.capitalize(this.kind_),
     tabindex: -1
